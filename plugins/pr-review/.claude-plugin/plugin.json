@@ -1,0 +1,7 @@
+{
+  "name": "pr-review",
+  "description": "Multi-stage, local-first GitHub PR review workflow. Drafts line-anchored review comments locally, lets the human edit, and publishes atomically to GitHub on explicit confirmation. Optimizes for review depth and accumulating component documentation, not throughput.",
+  "author": {
+    "name": "Chinmay Jain"
+  }
+}

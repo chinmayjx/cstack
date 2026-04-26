@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "cstack",
+  "description": "Chinmay's personal Claude Code stack — skills and tools for everyday engineering work",
+  "owner": {
+    "name": "Chinmay Jain",
+    "email": "chinmay@capillarytech.com"
+  },
+  "plugins": [
+    {
+      "name": "pr-review",
+      "description": "Multi-stage, local-first GitHub PR review workflow with line-anchored draft comments and human-edited atomic publish.",
+      "category": "development",
+      "source": "./plugins/pr-review"
+    },
+    {
+      "name": "meta-cognition",
+      "description": "Skills for deliberate reasoning frameworks — first-principles decomposition, assumption-examining, and related meta-cognitive approaches.",
+      "category": "productivity",
+      "source": "./plugins/meta-cognition"
+    }
+  ]
+}
