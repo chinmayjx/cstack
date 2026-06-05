@@ -1,0 +1,7 @@
+{
+  "name": "aira",
+  "description": "Drive Capillary AIRA (configuration creation, loyalty analytics, QA) from the CLI as a sub-agent.",
+  "author": {
+    "name": "Chinmay Jain"
+  }
+}
