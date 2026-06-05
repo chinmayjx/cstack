@@ -25,7 +25,7 @@ If a chat call ever prints `aira chat requires the 'websockets' package`, that's
 Always invoke via the absolute path so Bash permissions match the allowlist:
 
 ```bash
-${CLAUDE_SKILL_DIR}/aira.py login -u <email> -p <password> --org-id <org_id>
+${CLAUDE_SKILL_DIR}/aira.py login            # reads $AIRA_* env vars; flags optional
 ${CLAUDE_SKILL_DIR}/aira.py session create
 ${CLAUDE_SKILL_DIR}/aira.py chat --session-id <id> "<message>"
 ${CLAUDE_SKILL_DIR}/aira.py daemon-stop
@@ -33,7 +33,28 @@ ${CLAUDE_SKILL_DIR}/aira.py daemon-stop
 
 ### `login` (one-time per machine)
 
-Stores a JWT at `~/.aira/credentials.json`. The user does this themselves — never ask them for a password mid-session and never store it in any artifact you produce. If `aira session create` fails with `Not logged in`, tell the user to run the login command with their credentials.
+Authenticates and stores a JWT at `~/.aira/credentials.json`. The user runs this themselves — never ask them for a password mid-session and never store it in any artifact you produce. If `aira session create` fails with `Not logged in`, tell the user to authenticate.
+
+Credentials and the target cluster come from environment variables by default, so the user just runs `aira login` with no arguments. The recommended setup is to export these in `~/.bashrc` (or `~/.zshrc`):
+
+```bash
+export AIRA_USERNAME="you@capillarytech.com"
+export AIRA_PASSWORD="••••••"      # omit to be prompted instead of storing it
+export AIRA_ORG_ID="12345"
+export AIRA_CLUSTER="nightly"
+```
+
+Any value can be overridden on the CLI — flags take precedence over the environment, and the password is prompted if set neither way:
+
+```bash
+${CLAUDE_SKILL_DIR}/aira.py login -u <email> -p <password> --org-id <id> --cluster <name>
+```
+
+`--cluster` / `$AIRA_CLUSTER` selects which deployment to talk to; it defaults to `nightly`.
+
+| Cluster   | intouch URL                                 |
+|-----------|---------------------------------------------|
+| `nightly` | `https://nightly.intouch.capillarytech.com` |
 
 ### `session create`
 
@@ -51,7 +72,7 @@ Sends the message and streams aiRA's reply to stdout. Multi-turn — keep using 
 
 ## How to read the streamed output
 
-The CLI renders four kinds of content as plain text on stdout. Stderr carries metadata (session names, build-artifact notices, errors). When teeing to a log file use `2>&1` to capture both.
+The CLI renders three kinds of content as plain text on stdout. Stderr carries metadata (session names, build-artifact notices, errors). When teeing to a log file use `2>&1` to capture both.
 
 1. **Text response** — aiRA's natural-language reply. Streams chunk-by-chunk; may contain HTML/markdown (`<details>`, `<br>`, etc.) that wraps tool-discovery output. Keep all of it; the references in those blocks are aiRA's grounding evidence.
 2. **Config artifact** — buffered, printed as one block when ready:
@@ -75,14 +96,20 @@ The CLI renders four kinds of content as plain text on stdout. Stderr carries me
    ──── end cell ────
    ```
    `[plot saved: <path>]` is a real file you can `Read` with the Read tool. Same for `[PDF saved: <path>]`.
-4. **DBR SQL cell** — same shape, headed `──── SQL ────` / `Result:` / `──── end SQL ────`.
+
+## Session logs
+
+Every `chat` turn is automatically teed to `~/.aira/logs/<session_id>.log` (append mode — the file becomes the full transcript of that session: rendered text, cells, tables, and `[plot saved: ...]` notices). You don't pipe anything; the CLI writes it and prints `[session log: <path>]` on stderr at the start of each turn.
+
+You already have the same output inline, but the file is useful to hand to the user — tell them they can watch a long-running turn live with:
+
+```bash
+tail -f ~/.aira/logs/<session_id>.log
+```
 
 ## Error recovery
 
-Two distinct failure modes — different recovery rules:
-
-- **`[error: WS dropped mid-response: ...]`** — the WebSocket between the local daemon and the aiRA backend dropped mid-stream. The session is still alive on the server. **Re-run the same `aira chat --session-id <same id> "..."`** to continue. The previous assistant turn was cut off server-side, but session history is preserved.
-- **`<details class="error-analysis">` HTML block in the stream** — aiRA itself errored mid-turn (server-side internal error / token limit / tool failure). Re-running won't help in the same shape. **Split the request into smaller sub-tasks** and send them one at a time. e.g. instead of "discover schema, analyze 60 days, recommend config" in one prompt, send three separate chats.
+- **`[error: WS dropped mid-response: ...]`** — the WebSocket between the local daemon and the aiRA backend dropped mid-stream. The session is still alive on the server with its full chat history, so you do **not** have to redo the task. **Re-run the same `aira chat --session-id <same id> "..."`** — it reconnects and continues the conversation from where it left off. One caveat: a reconnect resets the analytics Python/Spark sandbox, so any in-memory state from an interrupted analytics turn (loaded dataframes, variables, the warm Spark kernel) is lost and that step re-executes from scratch. Plain config/chat turns have no such state and just resume.
 
 Other guidance:
 

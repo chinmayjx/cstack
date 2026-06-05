@@ -16,7 +16,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DEFAULT_HOST = "https://nightly.intouch.capillarytech.com"
+# Cluster name -> intouch base URL. Add new clusters here as they come online.
+CLUSTERS = {
+    "nightly": "https://nightly.intouch.capillarytech.com",
+}
+DEFAULT_CLUSTER = "nightly"
 STATE_DIR = Path.home() / ".aira"
 CREDENTIALS_PATH = STATE_DIR / "credentials.json"
 SOCK_PATH = STATE_DIR / "daemon.sock"
@@ -51,10 +55,26 @@ def _ws_url(creds, session_id):
 
 
 def cmd_login(args):
-    password = args.password or getpass.getpass("Password: ")
-    payload = json.dumps({"username": args.username, "password": password}).encode()
+    # CLI flags win; otherwise fall back to the AIRA_* environment variables.
+    username = args.username or os.environ.get("AIRA_USERNAME")
+    password = args.password or os.environ.get("AIRA_PASSWORD")
+    org_id = args.org_id or os.environ.get("AIRA_ORG_ID")
+    cluster = args.cluster or os.environ.get("AIRA_CLUSTER") or DEFAULT_CLUSTER
+
+    if not username:
+        sys.exit("no username: pass -u or set $AIRA_USERNAME")
+    if not org_id:
+        sys.exit("no org id: pass --org-id or set $AIRA_ORG_ID")
+    if cluster not in CLUSTERS:
+        sys.exit(f"unknown cluster '{cluster}'. known clusters: {', '.join(CLUSTERS)}")
+    host = CLUSTERS[cluster]
+
+    if not password:
+        password = getpass.getpass("Password: ")
+
+    payload = json.dumps({"username": username, "password": password}).encode()
     req = urllib.request.Request(
-        f"{args.host}/arya/api/v1/auth/login",
+        f"{host}/arya/api/v1/auth/login",
         data=payload,
         headers={
             "Content-Type": "application/json",
@@ -71,7 +91,7 @@ def cmd_login(args):
             f"login failed: {e.code} {e.reason}\n{e.read().decode(errors='ignore')}"
         )
     except urllib.error.URLError as e:
-        sys.exit(f"could not reach {args.host}: {e.reason}")
+        sys.exit(f"could not reach {host}: {e.reason}")
 
     token = body.get("token")
     if not token:
@@ -81,16 +101,17 @@ def cmd_login(args):
     CREDENTIALS_PATH.write_text(
         json.dumps(
             {
-                "username": args.username,
+                "username": username,
                 "token": token,
-                "org_id": args.org_id,
-                "host": args.host,
+                "org_id": org_id,
+                "cluster": cluster,
+                "host": host,
             },
             indent=2,
         )
     )
     CREDENTIALS_PATH.chmod(0o600)
-    print(f"logged in as {args.username} (org {args.org_id})")
+    print(f"logged in as {username} (org {org_id}, cluster {cluster})")
 
 
 # --- session create ---------------------------------------------------------
@@ -157,6 +178,38 @@ def _wait_for_daemon(timeout=10.0):
     return False
 
 
+class _Tee:
+    """Mirror every write to a real stream and to the session log file, so the
+    user can tail the log while Claude still sees the output inline."""
+
+    def __init__(self, stream, logfile):
+        self._stream = stream
+        self._logfile = logfile
+
+    def write(self, data):
+        self._stream.write(data)
+        self._logfile.write(data)
+        return len(data)
+
+    def flush(self):
+        self._stream.flush()
+        self._logfile.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _open_session_log(session_id: str, message: str):
+    log_dir = STATE_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / f"{session_id}.log"
+    logfile = path.open("a", encoding="utf-8")
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    logfile.write(f"\n===== {stamp} | > {message} =====\n")
+    logfile.flush()
+    return logfile, path
+
+
 def cmd_chat(args):
     _load_credentials()
 
@@ -171,35 +224,45 @@ def cmd_chat(args):
         "session_id": args.session_id,
     }
 
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.connect(str(SOCK_PATH))
-        s.sendall(
-            (
-                json.dumps(
-                    {
-                        "type": "chat",
-                        "session_id": args.session_id,
-                        "message": args.message,
-                    }
-                )
-                + "\n"
-            ).encode()
-        )
-        f = s.makefile("rb")
-        for raw in f:
-            line = raw.decode(errors="replace").rstrip("\n")
-            if not line:
-                continue
-            if args.raw:
-                print(line)
-                continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            _render_ws_message(msg, state)
+    logfile, log_path = _open_session_log(args.session_id, args.message)
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+    sys.stdout = _Tee(real_stdout, logfile)
+    sys.stderr = _Tee(real_stderr, logfile)
+    sys.stderr.write(f"[session log: {log_path}]\n")
+    sys.stderr.flush()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.connect(str(SOCK_PATH))
+            s.sendall(
+                (
+                    json.dumps(
+                        {
+                            "type": "chat",
+                            "session_id": args.session_id,
+                            "message": args.message,
+                        }
+                    )
+                    + "\n"
+                ).encode()
+            )
+            f = s.makefile("rb")
+            for raw in f:
+                line = raw.decode(errors="replace").rstrip("\n")
+                if not line:
+                    continue
+                if args.raw:
+                    print(line)
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                _render_ws_message(msg, state)
 
-    _finish_stream(state)
+        _finish_stream(state)
+    finally:
+        sys.stdout, sys.stderr = real_stdout, real_stderr
+        logfile.close()
 
 
 def _render_ws_message(msg: dict, state: dict) -> None:
@@ -248,12 +311,6 @@ def _on_artifact_card(content: dict, state: dict) -> None:
         state["artifacts"][version_id] = {"kind": "python_shell", "card": content}
         return
 
-    if sub == "DBR_SQL":
-        sys.stdout.write(f"\n──── SQL: {name} ────\nQuery:\n")
-        sys.stdout.flush()
-        state["artifacts"][version_id] = {"kind": "sql", "card": content}
-        return
-
     # Config (CONFIGURATION / INFERENCE) and anything else — buffer until ready.
     state["artifacts"][version_id] = {
         "kind": "config",
@@ -277,9 +334,6 @@ def _on_artifact_response(version_id: str | None, response: dict, state: dict) -
 
     if kind == "python_shell":
         _on_python_shell_response(version_id, artifact, rtype, response, state)
-        return
-    if kind == "sql":
-        _on_sql_response(rtype, response, state)
         return
 
     # config
@@ -319,30 +373,6 @@ def _on_python_shell_response(
         state["last_was_text"] = False
         return
     _print_shell_output(version_id, artifact, rtype, response, state)
-
-
-def _on_sql_response(rtype: str | None, response: dict, state: dict) -> None:
-    if rtype == "DBR_SQL_CHUNK":
-        sys.stdout.write(response.get("chunk", ""))
-        sys.stdout.flush()
-        return
-    if rtype == "DBR_SQL_COMPLETE":
-        sys.stdout.write("\n\nResult:\n")
-        sys.stdout.flush()
-        return
-    if rtype == "DBR_SQL_ERROR":
-        sys.stdout.write(f"[sql error] {response.get('error', '')}\n")
-        sys.stdout.flush()
-        return
-    result = response.get("result")
-    if result is not None:
-        sys.stdout.write(_format_table({"rows": result}) + "\n")
-        sys.stdout.write("──── end SQL ────\n\n")
-        sys.stdout.flush()
-        state["last_was_text"] = False
-        return
-    sys.stdout.write(json.dumps(response, indent=2) + "\n")
-    sys.stdout.flush()
 
 
 def _print_shell_output(
@@ -736,10 +766,16 @@ def main():
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_login = sub.add_parser("login", help="Authenticate and store credentials.")
-    p_login.add_argument("-u", "--username", required=True)
-    p_login.add_argument("-p", "--password", help="If omitted, prompts.")
-    p_login.add_argument("--org-id", required=True, type=int)
-    p_login.add_argument("--host", default=DEFAULT_HOST)
+    p_login.add_argument("-u", "--username", help="Defaults to $AIRA_USERNAME.")
+    p_login.add_argument(
+        "-p", "--password", help="Defaults to $AIRA_PASSWORD, else prompts."
+    )
+    p_login.add_argument("--org-id", help="Defaults to $AIRA_ORG_ID.")
+    p_login.add_argument(
+        "--cluster",
+        help=f"Cluster to target. Defaults to $AIRA_CLUSTER, else '{DEFAULT_CLUSTER}'. "
+        f"Known: {', '.join(CLUSTERS)}.",
+    )
     p_login.set_defaults(func=cmd_login)
 
     p_session = sub.add_parser("session", help="Session management.")
