@@ -18,12 +18,6 @@
       "description": "Skills for deliberate reasoning frameworks — first-principles decomposition, assumption-examining, and related meta-cognitive approaches.",
       "category": "productivity",
       "source": "./plugins/meta-cognition"
-    },
-    {
-      "name": "aira",
-      "description": "Drive Capillary aiRA (configuration creation, loyalty analytics, QA) as a sub-agent from the CLI. Delegates Capillary-specific work — promotions, campaigns, audiences, journeys, milestones, customer/transaction analytics — to the deployed aiRA backend over a daemon-held WebSocket.",
-      "category": "development",
-      "source": "./plugins/aira"
     }
   ]
 }
