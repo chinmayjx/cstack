@@ -10,16 +10,6 @@ allowed-tools:
 
 aiRA is Capillary's own AI assistant. It has a domain-tuned system prompt, MCP tools that read Capillary's schema and master data, and a sandboxed Spark/Databricks environment for analytics. **Delegate Capillary tasks to it; do not try to do them yourself.** Your job is to drive the CLI, interpret its streamed output, and surface results to the user.
 
-## One-time setup
-
-The script needs the `websockets` Python package:
-
-```bash
-pip install --user websockets
-```
-
-If a chat call ever prints `aira chat requires the 'websockets' package`, that's what to run.
-
 ## Commands
 
 Always invoke via the absolute path so Bash permissions match the allowlist:
@@ -33,7 +23,7 @@ ${CLAUDE_SKILL_DIR}/aira.py daemon-stop
 
 ### `login` (one-time per machine)
 
-Authenticates and stores a JWT at `~/.aira/credentials.json`. The user runs this themselves — never ask them for a password mid-session and never store it in any artifact you produce. If `aira session create` fails with `Not logged in`, tell the user to authenticate.
+Authenticates and stores a JWT at `~/.aira/credentials.json`. On the first login the CLI also bootstraps its runtime — it creates a private Python venv at `~/.aira/venv` and installs `websockets` into it; subsequent commands re-exec via that interpreter so the system Python stays untouched. The user runs this themselves — never ask them for a password mid-session and never store it in any artifact you produce. If `aira session create` or `aira chat` fails with `Not logged in` or returns an auth error (`401 Unauthorized`), tell the user to re-run `aira login`; the token has expired or was cleared.
 
 Credentials and the target cluster come from environment variables by default, so the user just runs `aira login` with no arguments. The recommended setup is to export these in `~/.bashrc` (or `~/.zshrc`):
 

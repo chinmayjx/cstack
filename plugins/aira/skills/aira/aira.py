@@ -26,6 +26,8 @@ CREDENTIALS_PATH = STATE_DIR / "credentials.json"
 SOCK_PATH = STATE_DIR / "daemon.sock"
 PID_PATH = STATE_DIR / "daemon.pid"
 LOG_PATH = STATE_DIR / "daemon.log"
+VENV_DIR = STATE_DIR / "venv"
+VENV_PYTHON = VENV_DIR / "bin" / "python"
 
 
 def _ensure_state_dir():
@@ -52,6 +54,75 @@ def _ws_url(creds, session_id):
 
 
 # --- login ------------------------------------------------------------------
+
+
+def _ensure_aira_venv():
+    """First-time bootstrap: create ~/.aira/venv and install websockets in it.
+
+    All non-login commands re-exec via the venv's interpreter (see
+    `_maybe_reexec_in_venv`), so the system Python is never modified.
+    """
+    if VENV_PYTHON.exists():
+        # venv exists — only (re)install websockets if missing.
+        probe = subprocess.run(
+            [str(VENV_PYTHON), "-c", "import websockets"],
+            capture_output=True,
+        )
+        if probe.returncode == 0:
+            return
+    else:
+        _ensure_state_dir()
+        print("[aira] creating runtime venv at ~/.aira/venv …", file=sys.stderr)
+        proc = subprocess.run(
+            [sys.executable, "-m", "venv", str(VENV_DIR)],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            print(
+                "[aira] could not create venv. Create it manually with:\n"
+                f"       {sys.executable} -m venv ~/.aira/venv\n"
+                f"       ~/.aira/venv/bin/pip install websockets",
+                file=sys.stderr,
+            )
+            if proc.stderr:
+                print(proc.stderr.strip(), file=sys.stderr)
+            return
+
+    print("[aira] installing websockets in venv …", file=sys.stderr)
+    proc = subprocess.run(
+        [str(VENV_PYTHON), "-m", "pip", "install", "--quiet", "websockets"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        print("[aira] websockets install failed. Run manually:", file=sys.stderr)
+        print("       ~/.aira/venv/bin/pip install websockets", file=sys.stderr)
+        if proc.stderr:
+            print(proc.stderr.strip(), file=sys.stderr)
+        return
+    print("[aira] runtime ready.", file=sys.stderr)
+
+
+def _maybe_reexec_in_venv():
+    """If the venv exists and we're not already running inside it, re-exec
+    via the venv's Python so `import websockets` works.
+
+    No-op when the venv is missing (login will create it) or when we're
+    already running inside it.
+    """
+    if not VENV_PYTHON.exists():
+        return
+    # We're already running in the venv iff sys.prefix points at it.
+    # Don't compare sys.executable: the venv's python is typically a
+    # symlink to the same underlying interpreter binary as the system one.
+    try:
+        if Path(sys.prefix).resolve() == VENV_DIR.resolve():
+            return
+    except OSError:
+        return
+    os.execv(str(VENV_PYTHON),
+             [str(VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 
 def cmd_login(args):
@@ -112,6 +183,7 @@ def cmd_login(args):
     )
     CREDENTIALS_PATH.chmod(0o600)
     print(f"logged in as {username} (org {org_id}, cluster {cluster})")
+    _ensure_aira_venv()
 
 
 # --- session create ---------------------------------------------------------
@@ -762,6 +834,11 @@ def cmd_daemon_stop(args):
 
 
 def main():
+    # Re-exec via ~/.aira/venv/bin/python for every command except `login`.
+    # Login runs on the system Python because it creates the venv itself.
+    if len(sys.argv) > 1 and sys.argv[1] != "login":
+        _maybe_reexec_in_venv()
+
     parser = argparse.ArgumentParser(prog="aira", description="Capillary AIRA CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
